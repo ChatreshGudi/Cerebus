@@ -1,18 +1,14 @@
 from flask import Flask, request, jsonify
-from google import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 import os
-import logging
 import input_guardrail
 
-# Load the API key from .env
-load_dotenv()
+load_dotenv()   
 api_key = os.getenv("GEMINI_API_KEY")
 
-# Initialize Gemini client
-client = genai.Client(api_key=api_key)
+genai.configure(api_key=api_key)
 
-# Create Flask app
 app = Flask(__name__)
 
 @app.route("/")
@@ -24,16 +20,38 @@ def generate():
     try:
         data = request.get_json()
         prompt = data.get("text", "")
-        # Call Gemini model
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
+        
+        if not prompt:
+            return jsonify({"error": "No text provided"}), 400
+        
+        conversation_history = data.get("conversation_history", None)
+
+        classification = input_guardrail.classify_prompt(prompt, conversation_history)
+
+        is_blocked = (
+            classification.get("skeleton_key") == "yes"
+            or classification.get("deceptive_delight") == "yes"
+            or classification.get("many_shot") == "yes"
+            or classification.get("safety") == "unsafe"
         )
 
-        return jsonify({"response": response.text})
+        if is_blocked:
+            return jsonify({
+                "error": "Prompt blocked by input guardrail",
+                "classification": classification
+            }), 403
+        
+        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        response = model.generate_content(prompt)
+
+        return jsonify({
+            "response": response.text,
+            "guardrail": classification
+        })
+
     except Exception as e:
-        print("❌ Error:", e)
+        print(" Error:", e)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
